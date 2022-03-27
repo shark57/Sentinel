@@ -513,6 +513,32 @@ public class SentinelApiClient {
     }
 
     /**
+     * wqi-重写，适配热点参数改造
+     * Fetch all parameter flow rules from provided machine.
+     *
+     * @param app   application name
+     * @param ip    machine client IP
+     * @param port  machine client port
+     * @param rules
+     * @return all retrieved parameter flow rules
+     * @since 0.2.1
+     */
+    public CompletableFuture<List<ParamFlowRuleEntity>> fetchParamFlowRulesOfMachine(String app, String ip, int port, List<ParamFlowRuleEntity> rules) {
+        try {
+            AssertUtil.notEmpty(app, "Bad app name");
+            AssertUtil.notEmpty(ip, "Bad machine IP");
+            AssertUtil.isTrue(port > 0, "Bad machine port");
+            List<ParamFlowRuleEntity> collect = rules.stream()
+                    .map(e -> ParamFlowRuleEntity.fromParamFlowRuleEntity(app, ip, port, e))
+                    .collect(Collectors.toList());
+            return CompletableFuture.completedFuture(collect);
+        } catch (Exception e) {
+            logger.error("Error when fetching parameter flow rules", e);
+            return AsyncUtils.newFailedFuture(e);
+        }
+    }
+
+    /**
      * Fetch all authority rules from provided machine.
      *
      * @param app  application name

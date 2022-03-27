@@ -26,10 +26,13 @@ import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.api.AddApiReqVo;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.api.ApiPredicateItemVo;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.api.UpdateApiReqVo;
 import com.alibaba.csp.sentinel.dashboard.repository.gateway.InMemApiDefinitionStore;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import com.alibaba.csp.sentinel.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.util.CollectionUtils;
 import org.springframework.web.bind.annotation.*;
 
@@ -40,6 +43,7 @@ import static com.alibaba.csp.sentinel.adapter.gateway.common.SentinelGatewayCon
 
 /**
  * Gateway api Controller for manage gateway api definitions.
+ * 已修改，已修改配置保存至nacos
  *
  * @author cdfive
  * @since 1.7.0
@@ -56,6 +60,21 @@ public class GatewayApiController {
     @Autowired
     private SentinelApiClient sentinelApiClient;
 
+
+    /**
+     * 添加自定义实现的 ruleProvider
+     */
+    @Autowired
+    @Qualifier("gatewayApiNacosProvider")
+    private DynamicRuleProvider<List<ApiDefinitionEntity>> gatewayApiProvider;
+
+    /**
+     * 添加自定义实现的 publisher
+     */
+    @Autowired
+    @Qualifier("gatewayApiNacosPublisher")
+    private DynamicRulePublisher<List<ApiDefinitionEntity>> gatewayApiPublisher;
+
     @GetMapping("/list.json")
     @AuthAction(AuthService.PrivilegeType.READ_RULE)
     public Result<List<ApiDefinitionEntity>> queryApis(String app, String ip, Integer port) {
@@ -71,7 +90,8 @@ public class GatewayApiController {
         }
 
         try {
-            List<ApiDefinitionEntity> apis = sentinelApiClient.fetchApis(app, ip, port).get();
+//            List<ApiDefinitionEntity> apis = sentinelApiClient.fetchApis(app, ip, port).get();
+            List<ApiDefinitionEntity> apis = gatewayApiProvider.getRules(app);
             repository.saveAll(apis);
             return Result.ofSuccess(apis);
         } catch (Throwable throwable) {
@@ -140,7 +160,14 @@ public class GatewayApiController {
         entity.setPredicateItems(new LinkedHashSet<>(predicateItemEntities));
 
         // 检查API名称不能重复
-        List<ApiDefinitionEntity> allApis = repository.findAllByMachine(MachineInfo.of(app.trim(), ip.trim(), port));
+//        List<ApiDefinitionEntity> allApis = repository.findAllByMachine(MachineInfo.of(app.trim(), ip.trim(), port));
+        List<ApiDefinitionEntity> allApis = null;
+        try {
+            //此处去nacos获取
+            allApis = gatewayApiProvider.getRules(apiName);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         if (allApis.stream().map(o -> o.getApiName()).anyMatch(o -> o.equals(apiName.trim()))) {
             return Result.ofFail(-1, "apiName exists: " + apiName);
         }
@@ -156,7 +183,8 @@ public class GatewayApiController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishApis(app, ip, port)) {
+//        if (!publishApis(app, ip, port)) {
+        if (!publishApis(app)) {
             logger.warn("publish gateway apis fail after add");
         }
 
@@ -219,7 +247,8 @@ public class GatewayApiController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishApis(app, entity.getIp(), entity.getPort())) {
+//        if (!publishApis(app, entity.getIp(), entity.getPort())) {
+        if (!publishApis(app)) {
             logger.warn("publish gateway apis fail after update");
         }
 
@@ -246,7 +275,8 @@ public class GatewayApiController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishApis(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
+        if (!publishApis(oldEntity.getApp())) {
+//        if (!publishApis(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
             logger.warn("publish gateway apis fail after delete");
         }
 
@@ -256,5 +286,20 @@ public class GatewayApiController {
     private boolean publishApis(String app, String ip, Integer port) {
         List<ApiDefinitionEntity> apis = repository.findAllByMachine(MachineInfo.of(app, ip, port));
         return sentinelApiClient.modifyApis(app, ip, port, apis);
+    }
+
+    /**
+     * @param app
+     * @return
+     */
+    private boolean publishApis(String app) {
+        List<ApiDefinitionEntity> rules = repository.findAllByApp(app);
+        try {
+            gatewayApiPublisher.publish(app, rules);
+        } catch (Exception e) {
+            logger.error("GatewayApiController推送nacos异常，异常信息：{}", e.getMessage());
+            return false;
+        }
+        return true;
     }
 }

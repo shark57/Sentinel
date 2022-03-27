@@ -46,6 +46,34 @@ public class ParamFlowRuleEntity extends AbstractRuleEntity<ParamFlowRule> {
         return entity;
     }
 
+
+    /**
+     * wqi重写
+     *
+     * @param app
+     * @param ip
+     * @param port
+     * @param entity
+     * @return
+     */
+    public static ParamFlowRuleEntity fromParamFlowRuleEntity(String app, String ip, Integer port, ParamFlowRuleEntity entity) {
+        entity.setApp(app);
+        entity.setIp(ip);
+        entity.setPort(port);
+        return entity;
+    }
+
+
+    /**
+     * wqi 重写的方法
+     *
+     * @param rule
+     * @return
+     */
+    public static ParamFlowRuleEntity fromParamFlowRule(ParamFlowRule rule) {
+        ParamFlowRuleEntity entity = new ParamFlowRuleEntity(rule);
+        return entity;
+    }
     @JsonIgnore
     @JSONField(serialize = false)
     public String getLimitApp() {

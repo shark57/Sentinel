@@ -20,9 +20,13 @@ import java.util.List;
 
 import com.alibaba.csp.sentinel.dashboard.auth.AuthAction;
 import com.alibaba.csp.sentinel.dashboard.client.SentinelApiClient;
+import com.alibaba.csp.sentinel.dashboard.datasource.entity.gateway.ApiDefinitionEntity;
+import com.alibaba.csp.sentinel.dashboard.datasource.entity.gateway.GatewayFlowRuleEntity;
 import com.alibaba.csp.sentinel.dashboard.discovery.MachineInfo;
 import com.alibaba.csp.sentinel.dashboard.auth.AuthService.PrivilegeType;
 import com.alibaba.csp.sentinel.dashboard.repository.rule.RuleRepository;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import com.alibaba.csp.sentinel.slots.block.RuleConstant;
 import com.alibaba.csp.sentinel.slots.block.degrade.circuitbreaker.CircuitBreakerStrategy;
 import com.alibaba.csp.sentinel.util.StringUtil;
@@ -33,6 +37,7 @@ import com.alibaba.csp.sentinel.dashboard.domain.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -44,6 +49,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Controller regarding APIs of degrade rules. Refactored since 1.8.0.
+ * 降级处理，已修改配置保存至nacos
  *
  * @author Carpenter Lee
  * @author Eric Zhao
@@ -59,6 +65,20 @@ public class DegradeController {
     @Autowired
     private SentinelApiClient sentinelApiClient;
 
+    /**
+     * 添加自定义实现的 ruleProvider
+     */
+    @Autowired
+    @Qualifier("degradeRuleNacosProvider")
+    private DynamicRuleProvider<List<DegradeRuleEntity>> degradeRuleProvider;
+
+    /**
+     * 添加自定义实现的 publisher
+     */
+    @Autowired
+    @Qualifier("degradeRuleNacosPublisher")
+    private DynamicRulePublisher<List<DegradeRuleEntity>> degradeRulePublisher;
+
     @GetMapping("/rules.json")
     @AuthAction(PrivilegeType.READ_RULE)
     public Result<List<DegradeRuleEntity>> apiQueryMachineRules(String app, String ip, Integer port) {
@@ -72,7 +92,8 @@ public class DegradeController {
             return Result.ofFail(-1, "port can't be null");
         }
         try {
-            List<DegradeRuleEntity> rules = sentinelApiClient.fetchDegradeRuleOfMachine(app, ip, port);
+//            List<DegradeRuleEntity> rules = sentinelApiClient.fetchDegradeRuleOfMachine(app, ip, port);
+            List<DegradeRuleEntity> rules = degradeRuleProvider.getRules(app);
             rules = repository.saveAll(rules);
             return Result.ofSuccess(rules);
         } catch (Throwable throwable) {
@@ -97,7 +118,8 @@ public class DegradeController {
             logger.error("Failed to add new degrade rule, app={}, ip={}", entity.getApp(), entity.getIp(), t);
             return Result.ofThrowable(-1, t);
         }
-        if (!publishRules(entity.getApp(), entity.getIp(), entity.getPort())) {
+//        if (!publishRules(entity.getApp(), entity.getIp(), entity.getPort())) {
+        if (!publishRules(entity.getApp())) {
             logger.warn("Publish degrade rules failed, app={}", entity.getApp());
         }
         return Result.ofSuccess(entity);
@@ -106,10 +128,11 @@ public class DegradeController {
     @PutMapping("/rule/{id}")
     @AuthAction(PrivilegeType.WRITE_RULE)
     public Result<DegradeRuleEntity> apiUpdateRule(@PathVariable("id") Long id,
-                                                     @RequestBody DegradeRuleEntity entity) {
+                                                   @RequestBody DegradeRuleEntity entity) {
         if (id == null || id <= 0) {
             return Result.ofFail(-1, "id can't be null or negative");
         }
+        //wqi-此处不需要修改，推测是每次启动会预先加载一次
         DegradeRuleEntity oldEntity = repository.findById(id);
         if (oldEntity == null) {
             return Result.ofFail(-1, "Degrade rule does not exist, id=" + id);
@@ -131,7 +154,8 @@ public class DegradeController {
             logger.error("Failed to save degrade rule, id={}, rule={}", id, entity, t);
             return Result.ofThrowable(-1, t);
         }
-        if (!publishRules(entity.getApp(), entity.getIp(), entity.getPort())) {
+//        if (!publishRules(entity.getApp(), entity.getIp(), entity.getPort())) {
+        if (!publishRules(entity.getApp())) {
             logger.warn("Publish degrade rules failed, app={}", entity.getApp());
         }
         return Result.ofSuccess(entity);
@@ -155,7 +179,8 @@ public class DegradeController {
             logger.error("Failed to delete degrade rule, id={}", id, throwable);
             return Result.ofThrowable(-1, throwable);
         }
-        if (!publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
+//        if (!publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
+        if (!publishRules(oldEntity.getApp())) {
             logger.warn("Publish degrade rules failed, app={}", oldEntity.getApp());
         }
         return Result.ofSuccess(id);
@@ -164,6 +189,23 @@ public class DegradeController {
     private boolean publishRules(String app, String ip, Integer port) {
         List<DegradeRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
         return sentinelApiClient.setDegradeRuleOfMachine(app, ip, port, rules);
+    }
+
+    /**
+     * 重写方法，向nacos推送
+     *
+     * @param app
+     * @return
+     */
+    private boolean publishRules(String app) {
+        List<DegradeRuleEntity> rules = repository.findAllByApp(app);
+        try {
+            degradeRulePublisher.publish(app, rules);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+        return true;
     }
 
     private <R> Result<R> checkEntityInternal(DegradeRuleEntity entity) {
@@ -195,10 +237,10 @@ public class DegradeController {
             return Result.ofFail(-1, "circuit breaker strategy cannot be null");
         }
         if (strategy < CircuitBreakerStrategy.SLOW_REQUEST_RATIO.getType()
-            || strategy > RuleConstant.DEGRADE_GRADE_EXCEPTION_COUNT) {
+                || strategy > RuleConstant.DEGRADE_GRADE_EXCEPTION_COUNT) {
             return Result.ofFail(-1, "Invalid circuit breaker strategy: " + strategy);
         }
-        if (entity.getMinRequestAmount()  == null || entity.getMinRequestAmount() <= 0) {
+        if (entity.getMinRequestAmount() == null || entity.getMinRequestAmount() <= 0) {
             return Result.ofFail(-1, "Invalid minRequestAmount");
         }
         if (entity.getStatIntervalMs() == null || entity.getStatIntervalMs() <= 0) {

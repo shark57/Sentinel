@@ -27,10 +27,13 @@ import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.AddFlowRuleReqV
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.GatewayParamFlowItemVo;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.UpdateFlowRuleReqVo;
 import com.alibaba.csp.sentinel.dashboard.repository.gateway.InMemGatewayFlowRuleStore;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import com.alibaba.csp.sentinel.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Arrays;
@@ -43,6 +46,7 @@ import static com.alibaba.csp.sentinel.dashboard.datasource.entity.gateway.Gatew
 
 /**
  * Gateway flow rule Controller for manage gateway flow rules.
+ * 已修改，已修改配置保存至nacos
  *
  * @author cdfive
  * @since 1.7.0
@@ -59,6 +63,20 @@ public class GatewayFlowRuleController {
     @Autowired
     private SentinelApiClient sentinelApiClient;
 
+    /**
+     * 添加自定义实现的 ruleProvider
+     */
+    @Autowired
+    @Qualifier("gatewayFlowRuleNacosProvider")
+    private DynamicRuleProvider<List<GatewayFlowRuleEntity>> gatewayFlowRuleProvider;
+
+    /**
+     * 添加自定义实现的 publisher
+     */
+    @Autowired
+    @Qualifier("gatewayFlowRuleNacosPublisher")
+    private DynamicRulePublisher<List<GatewayFlowRuleEntity>> gatewayFlowRulePublisher;
+
     @GetMapping("/list.json")
     @AuthAction(AuthService.PrivilegeType.READ_RULE)
     public Result<List<GatewayFlowRuleEntity>> queryFlowRules(String app, String ip, Integer port) {
@@ -74,7 +92,8 @@ public class GatewayFlowRuleController {
         }
 
         try {
-            List<GatewayFlowRuleEntity> rules = sentinelApiClient.fetchGatewayFlowRules(app, ip, port).get();
+//            List<GatewayFlowRuleEntity> rules = sentinelApiClient.fetchGatewayFlowRules(app, ip, port).get();
+            List<GatewayFlowRuleEntity> rules = gatewayFlowRuleProvider.getRules(app);
             repository.saveAll(rules);
             return Result.ofSuccess(rules);
         } catch (Throwable throwable) {
@@ -243,7 +262,8 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(app, ip, port)) {
+        if (!publishRules(app)) {
+//        if (!publishRules(app, ip, port)) {
             logger.warn("publish gateway flow rules fail after add");
         }
 
@@ -389,7 +409,8 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(app, entity.getIp(), entity.getPort())) {
+        if (!publishRules(app)) {
+//        if (!publishRules(app, entity.getIp(), entity.getPort())) {
             logger.warn("publish gateway flow rules fail after update");
         }
 
@@ -417,7 +438,8 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
+//        if (!publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
+        if (!publishRules(oldEntity.getApp())) {
             logger.warn("publish gateway flow rules fail after delete");
         }
 
@@ -427,5 +449,22 @@ public class GatewayFlowRuleController {
     private boolean publishRules(String app, String ip, Integer port) {
         List<GatewayFlowRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
         return sentinelApiClient.modifyGatewayFlowRules(app, ip, port, rules);
+    }
+
+    /**
+     * nacos推送
+     *
+     * @param app
+     * @return
+     */
+    private boolean publishRules(String app) {
+        List<GatewayFlowRuleEntity> rules = repository.findAllByApp(app);
+        try {
+            gatewayFlowRulePublisher.publish(app, rules);
+        } catch (Exception e) {
+            logger.error("GatewayFlowRuleController推送nacos异常，异常信息：{}", e.getMessage());
+            return false;
+        }
+        return true;
     }
 }
